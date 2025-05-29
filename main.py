@@ -7,6 +7,7 @@ import json
 import io
 from pydantic import BaseModel
 from typing import List, Optional
+import os
 
 app = FastAPI(title="Test API", description="테스트용 FastAPI 애플리케이션")
 
@@ -19,8 +20,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 모델 및 라벨 불러오기 (고양이)
+# 모델 및 라벨 불러오기
 try:
+    # 이진 분류 모델 (고양이/강아지)
+    catdog_model = models.resnet50(weights=None)
+    catdog_model.fc = torch.nn.Linear(catdog_model.fc.in_features, 2)
+    catdog_model.load_state_dict(torch.load("model/catdog_resnet50.pth", map_location="cpu"))
+    catdog_model.eval()
+    catdog_class_names = ['Cat', 'Dog']
+except Exception as e:
+    print(f"[ERROR] 이진 분류 모델 로딩 실패: {e}")
+    catdog_model = None
+    catdog_class_names = []
+
+try:
+    # 고양이 품종 분류 모델
     cat_model = models.resnet50(weights=None)
     with open("model/catlabels.json", "r", encoding="utf-8") as f:
         cat_label_dict = json.load(f)
@@ -40,8 +54,8 @@ except Exception as e:
     cat_idx_to_eng = []
     cat_idx_to_kor = []
 
-# 모델 및 라벨 불러오기 (강아지)
 try:
+    # 강아지 품종 분류 모델
     dog_model = models.resnet50(weights=None)
     with open("model/labels.json", "r", encoding="utf-8") as f:
         dog_label_dict = json.load(f)
@@ -132,31 +146,40 @@ async def delete_item(item_id: int):
 
 @app.post("/api/pet-breed/detect")
 async def detect_pet_breed(file: UploadFile = File(...)):
-    if cat_model is None or dog_model is None:
+    if catdog_model is None or cat_model is None or dog_model is None:
         raise HTTPException(status_code=500, detail="모델 또는 라벨 파일이 로드되지 않았습니다.")
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     input_tensor = transform(image).unsqueeze(0)
 
-    cat_eng, cat_kor, cat_conf = predict(cat_model, cat_idx_to_eng, cat_idx_to_kor, input_tensor)
-    dog_eng, dog_kor, dog_conf = predict(dog_model, dog_idx_to_eng, dog_idx_to_kor, input_tensor)
+    # 1. 이진 분류로 고양이/강아지 판별
+    with torch.no_grad():
+        output = catdog_model(input_tensor)
+        probs = torch.nn.functional.softmax(output[0], dim=0)
+        pred_idx = torch.argmax(probs).item()
+        pet_type = catdog_class_names[pred_idx]
+        pet_conf = float(probs[pred_idx])
 
-    if cat_conf > dog_conf:
+    # 2. 해당 품종 분류 모델로 품종 추론
+    if pet_type == 'Cat':
+        breed_eng, breed_kor, breed_conf = predict(cat_model, cat_idx_to_eng, cat_idx_to_kor, input_tensor)
         return {
             "type": "cat",
-            "breed": cat_kor,
-            "breed_en": cat_eng,
-            "confidence": round(cat_conf, 4)
+            "type_confidence": round(pet_conf, 4),
+            "breed": breed_kor,
+            "breed_en": breed_eng,
+            "breed_confidence": round(breed_conf, 4)
         }
     else:
+        breed_eng, breed_kor, breed_conf = predict(dog_model, dog_idx_to_eng, dog_idx_to_kor, input_tensor)
         return {
             "type": "dog",
-            "breed": dog_kor,
-            "breed_en": dog_eng,
-            "confidence": round(dog_conf, 4)
+            "type_confidence": round(pet_conf, 4),
+            "breed": breed_kor,
+            "breed_en": breed_eng,
+            "breed_confidence": round(breed_conf, 4)
         }
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
