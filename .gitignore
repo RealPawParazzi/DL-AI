@@ -172,3 +172,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+<<<<<<< HEAD
+=======
+# Ignore PyTorch model files
+model/*.pth 
+>>>>>>> f0b54c3 (모델(.pth) 파일 무시 규칙 추가)
